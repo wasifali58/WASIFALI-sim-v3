@@ -1,4 +1,4 @@
-// SIM DATABASE API - COMPLETE WORKING
+// SIM DATABASE API - DUAL BACKEND (PROPER ENDPOINTS)
 // Developer: WASIF ALI | Telegram: @FREEHACKS95
 
 export default async function handler(req, res) {
@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: false,
       message: "Please provide a search query",
-      usage: "/api/?search=03xxxxxxxxx or /api/?search=xxxxx-xxxxxxx-x",
+      usage: "/api/?search=03xxxxxxxxx or /api/?search=36301-xxxxxxx-x",
       developer: "WASIF ALI",
       telegram: "@FREEHACKS95"
     });
@@ -27,61 +27,52 @@ export default async function handler(req, res) {
     const isCNIC = /^[0-9]{13}$/.test(cleanSearch) || /^[0-9]{5}-[0-9]{7}-[0-9]$/.test(cleanSearch);
     
     if (!isMobile && !isCNIC) {
-      return res.status(400).json({
+      return res.status(200).json({
         success: false,
-        message: "Invalid format. Use mobile (03xxxxxxxxx) or CNIC (xxxxx-xxxxxxx-x)",
+        message: "No record found",
         developer: "WASIF ALI",
         telegram: "@FREEHACKS95"
       });
     }
 
-    let targetCNIC = null;
-    const uniqueRecords = new Map();
-
-    // STEP 1: Get CNIC from mobile number (if mobile search)
+    // Format for both APIs
+    let formattedForSims = cleanSearch;
+    let formattedForFak = cleanSearch;
+    let isCNICSearch = false;
+    
     if (isMobile) {
-      const formattedMobile = '92' + cleanSearch.substring(1);
-      const simsUrl = `https://simsownersdetails.net.pk/sd-lookup.php?number=${encodeURIComponent(formattedMobile)}`;
-      
-      const simsRes = await fetch(simsUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
-          "Accept": "application/json",
-          "Referer": "https://simsownersdetails.net.pk/cnic-information/",
-          "DNT": "1"
-        }
-      });
-
-      if (simsRes.ok) {
-        const data = await simsRes.json();
-        if (Array.isArray(data) && data.length > 0 && data[0].CNIC) {
-          targetCNIC = data[0].CNIC;
-        } else if (data && data.CNIC) {
-          targetCNIC = data.CNIC;
-        }
-      }
-    } 
-    // STEP 2: Format CNIC directly
-    else {
+      formattedForSims = '92' + cleanSearch.substring(1);
+      formattedForFak = cleanSearch.substring(1);
+    } else {
+      isCNICSearch = true;
       const plainCNIC = cleanSearch.replace(/-/g, '');
-      if (plainCNIC.length === 13) {
-        targetCNIC = `${plainCNIC.slice(0,5)}-${plainCNIC.slice(5,12)}-${plainCNIC.slice(12)}`;
-      }
+      formattedForSims = `${plainCNIC.slice(0,5)}-${plainCNIC.slice(5,12)}-${plainCNIC.slice(12)}`;
+      formattedForFak = plainCNIC;
     }
 
-    // STEP 3: If CNIC found, fetch all SIMs
-    if (targetCNIC) {
-      const simsUrl = `https://simsownersdetails.net.pk/sd-lookup.php?number=${encodeURIComponent(targetCNIC)}`;
-      
-      const simsRes = await fetch(simsUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
-          "Accept": "application/json",
-          "Referer": "https://simsownersdetails.net.pk/cnic-information/",
-          "DNT": "1"
-        }
-      });
+    // API URLs
+    const SIMS_URL = `https://simsownersdetails.net.pk/sd-lookup.php?number=${encodeURIComponent(formattedForSims)}`;
+    const FAK_URL = `https://sim-api.fakcloud.tech/?q=${encodeURIComponent(formattedForFak)}`;
 
+    // Headers
+    const SIMS_HEADERS = {
+      "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+      "Accept": "application/json",
+      "Referer": "https://simsownersdetails.net.pk/cnic-information/",
+      "DNT": "1"
+    };
+
+    const FAK_HEADERS = {
+      "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+      "Accept": "application/json"
+    };
+
+    let allRecords = [];
+    const uniqueRecords = new Map();
+
+    // Try SIMSOWNERS API first
+    try {
+      const simsRes = await fetch(SIMS_URL, { headers: SIMS_HEADERS });
       if (simsRes.ok) {
         const data = await simsRes.json();
         let records = [];
@@ -92,7 +83,6 @@ export default async function handler(req, res) {
           records = [data];
         }
         
-        // Remove duplicates by mobile number
         records.forEach(record => {
           let mobile = record.Mobile || record.mobile;
           if (mobile && mobile.startsWith('92')) {
@@ -110,14 +100,51 @@ export default async function handler(req, res) {
               mobile: mobile,
               cnic: record.CNIC || record.cnic,
               address: (record.ADDRESS || record.address || "").substring(0, 200),
-              network: detectNetwork(mobile)
+              network: detectNetwork(mobile),
+              source: "simsowners"
             });
           }
         });
       }
+    } catch(e) {}
+
+    // If SIMSOWNERS gave no data, try FAKCLOUD
+    if (uniqueRecords.size === 0) {
+      try {
+        const fakRes = await fetch(FAK_URL, { headers: FAK_HEADERS });
+        if (fakRes.ok) {
+          const data = await fakRes.json();
+          if (data.success === true && data.data && data.data.records) {
+            const records = data.data.records.filter(r => r.full_name && r.full_name !== '***************');
+            
+            records.forEach(record => {
+              let mobile = record.phone || record.mobile;
+              if (mobile && mobile.startsWith('92')) {
+                mobile = '0' + mobile.substring(2);
+              }
+              if (mobile && mobile.length === 10 && mobile.startsWith('3')) {
+                mobile = '0' + mobile;
+              }
+              
+              const cleanMobile = mobile ? mobile.replace(/\D/g, '').slice(-11) : null;
+              
+              if (cleanMobile && cleanMobile.length === 11 && !uniqueRecords.has(cleanMobile)) {
+                uniqueRecords.set(cleanMobile, {
+                  name: record.full_name || record.name,
+                  mobile: mobile,
+                  cnic: record.cnic,
+                  address: (record.address || "").substring(0, 200),
+                  network: detectNetwork(mobile),
+                  source: "fakcloud"
+                });
+              }
+            });
+          }
+        }
+      } catch(e) {}
     }
 
-    const allRecords = Array.from(uniqueRecords.values());
+    allRecords = Array.from(uniqueRecords.values());
 
     if (allRecords.length === 0) {
       return res.status(200).json({
@@ -128,16 +155,35 @@ export default async function handler(req, res) {
       });
     }
 
+    // Remove source field from final response
+    const cleanRecords = allRecords.map(({ source, ...rest }) => rest);
+
+    // Mobile search - single record
+    if (!isCNICSearch && cleanRecords.length >= 1) {
+      const r = cleanRecords[0];
+      return res.status(200).json({
+        success: true,
+        name: r.name,
+        mobile: r.mobile,
+        cnic: r.cnic || "Not available",
+        address: r.address || "Not available",
+        network: r.network,
+        developer: "WASIF ALI",
+        telegram: "@FREEHACKS95"
+      });
+    }
+
+    // CNIC search - multiple records
     return res.status(200).json({
       success: true,
-      total_sims: allRecords.length,
-      records: allRecords,
+      total_sims: cleanRecords.length,
+      records: cleanRecords,
       developer: "WASIF ALI",
       telegram: "@FREEHACKS95"
     });
 
   } catch (error) {
-    return res.status(500).json({
+    return res.status(200).json({
       success: false,
       message: "No record found",
       developer: "WASIF ALI",
