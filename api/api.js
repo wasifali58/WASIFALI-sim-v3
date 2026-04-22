@@ -1,4 +1,4 @@
-// SIM DATABASE API - USING YOUR CAPTURED SITE ONLY
+// SIM DATABASE API - EXACT HTML PARSING
 // Developer: WASIF ALI | Telegram: @FREEHACKS95
 
 export default async function handler(req, res) {
@@ -23,7 +23,6 @@ export default async function handler(req, res) {
   try {
     const cleanSearch = search.replace(/\s/g, '');
     
-    // Detect type
     let searchType = "mobile";
     let formattedSearch = cleanSearch;
     
@@ -37,12 +36,11 @@ export default async function handler(req, res) {
       }
     }
 
-    // EXACT same request as your capture
     const apiUrl = `https://simlivetracker.com.pk/api.php?search=${encodeURIComponent(formattedSearch)}&type=${searchType}`;
     
     const response = await fetch(apiUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
         "Accept": "*/*",
         "Referer": "https://simlivetracker.com.pk/",
         "DNT": "1"
@@ -51,20 +49,51 @@ export default async function handler(req, res) {
 
     const html = await response.text();
     
-    // Parse HTML to JSON
+    // ========== ACCURATE PARSING ==========
     let result = {};
     
     if (searchType === "mobile") {
-      // Extract data using regex
-      const nameMatch = html.match(/Name[:\s]*([^<\n]+)/i);
-      const mobileMatch = html.match(/Mobile[:\s]*([0-9]{11})/i);
-      const cnicMatch = html.match(/CNIC[:\s]*([0-9-]{13,15})/i);
-      const addressMatch = html.match(/Address[:\s]*([^<\n]+)/i);
+      // Method 1: Look for table data
+      const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/i);
+      if (tableMatch) {
+        const tableHtml = tableMatch[1];
+        
+        // Extract name
+        const nameMatch = tableHtml.match(/Name<\/td>\s*<td[^>]*>([^<]+)/i);
+        if (nameMatch) result.name = nameMatch[1].trim();
+        
+        // Extract mobile
+        const mobileMatch = tableHtml.match(/Mobile<\/td>\s*<td[^>]*>([^<]+)/i);
+        if (mobileMatch) result.mobile = mobileMatch[1].trim();
+        else result.mobile = cleanSearch;
+        
+        // Extract CNIC
+        const cnicMatch = tableHtml.match(/CNIC<\/td>\s*<td[^>]*>([^<]+)/i);
+        if (cnicMatch) result.cnic = cnicMatch[1].trim();
+        
+        // Extract address
+        const addressMatch = tableHtml.match(/Address<\/td>\s*<td[^>]*>([^<]+)/i);
+        if (addressMatch) result.address = addressMatch[1].trim();
+      }
       
-      if (nameMatch) result.name = nameMatch[1].trim();
-      if (mobileMatch) result.mobile = mobileMatch[1];
-      if (cnicMatch) result.cnic = cnicMatch[1];
-      if (addressMatch) result.address = addressMatch[1].trim();
+      // Method 2: Direct regex fallback
+      if (!result.name) {
+        const nameRegex = /Name<\/td>\s*<td[^>]*>([^<]+)/i;
+        const nameMatch = html.match(nameRegex);
+        if (nameMatch) result.name = nameMatch[1].trim();
+      }
+      
+      if (!result.cnic) {
+        const cnicRegex = /CNIC<\/td>\s*<td[^>]*>([^<]+)/i;
+        const cnicMatch = html.match(cnicRegex);
+        if (cnicMatch) result.cnic = cnicMatch[1].trim();
+      }
+      
+      if (!result.address) {
+        const addrRegex = /Address<\/td>\s*<td[^>]*>([^<]+)/i;
+        const addrMatch = html.match(addrRegex);
+        if (addrMatch) result.address = addrMatch[1].trim();
+      }
       
       // Network detection
       if (result.mobile) {
@@ -77,23 +106,44 @@ export default async function handler(req, res) {
       }
     } 
     else {
-      // CNIC search - multiple records
+      // CNIC search - extract all records
       const records = [];
-      const pattern = /([0-9]{11}).*?([A-Za-z\s]+).*?([0-9-]{13,15})/gi;
-      let match;
-      while ((match = pattern.exec(html)) !== null) {
-        const mobile = match[1].trim();
-        const name = match[2].trim();
-        const cnicVal = match[3].trim();
+      
+      // Find all rows in the table
+      const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+      let rowMatch;
+      
+      while ((rowMatch = rowPattern.exec(html)) !== null) {
+        const rowHtml = rowMatch[1];
         
-        let network = "Unknown";
-        const prefix = parseInt(mobile.substring(0, 4));
-        if (prefix >= 301 && prefix <= 329) network = "Jazz";
-        else if (prefix >= 310 && prefix <= 319) network = "Zong";
-        else if (prefix >= 330 && prefix <= 339) network = "Ufone";
-        else if (prefix >= 340 && prefix <= 359) network = "Telenor";
+        // Skip header row
+        if (rowHtml.includes('<th')) continue;
         
-        records.push({ name, mobile, cnic: cnicVal, network });
+        // Extract columns
+        const cols = [];
+        const colPattern = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+        let colMatch;
+        
+        while ((colMatch = colPattern.exec(rowHtml)) !== null) {
+          cols.push(colMatch[1].trim());
+        }
+        
+        if (cols.length >= 3) {
+          const mobile = cols[0].replace(/[^0-9]/g, '');
+          const name = cols[1];
+          const cnic = cols[2];
+          
+          if (mobile && mobile.length === 11) {
+            let network = "Unknown";
+            const prefix = parseInt(mobile.substring(0, 4));
+            if (prefix >= 301 && prefix <= 329) network = "Jazz";
+            else if (prefix >= 310 && prefix <= 319) network = "Zong";
+            else if (prefix >= 330 && prefix <= 339) network = "Ufone";
+            else if (prefix >= 340 && prefix <= 359) network = "Telenor";
+            
+            records.push({ name, mobile, cnic, network });
+          }
+        }
       }
       
       result = {
@@ -103,7 +153,7 @@ export default async function handler(req, res) {
       };
     }
 
-    if (Object.keys(result).length === 0) {
+    if (Object.keys(result).length === 0 || (searchType === "mobile" && !result.name && !result.cnic)) {
       return res.status(404).json({
         status: false,
         message: "No data found",
